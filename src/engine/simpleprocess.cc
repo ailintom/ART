@@ -627,24 +627,33 @@ private:
     }
 
     // With a crop, process only the source region it needs, as
-    // Crop::setCropSizes() does. Sets pp to that region. Returns false (full
-    // frame) for tools that need the whole image, or whose transform code
-    // assumes the same origin for source and destination.
+    // Crop::setCropSizes() does. Sets pp to that region. Returns false when
+    // the full frame is needed.
     bool setup_crop_region(bool is_fast)
     {
         const procparams::ProcParams &params = job->pparams;
         ImProcFunctions &ipf = *(ipf_p.get());
 
-        if (!params.crop.enabled || is_fast) {
+        if (!params.crop.enabled || is_fast || ipf.stage0NeedsFullImage()) {
             return false;
         }
-        if (ipf.needsFullImage() || params.denoise.enabled ||
-            params.filmNegative.enabled ||
-            (params.spot.enabled && !params.spot.entries.empty()) ||
-            params.vignetting.enabled || params.perspective.enabled ||
-            (params.lensProf.needed() && params.lensProf.useCA) ||
-            (params.distortion.enabled && params.distortion.autocompute)) {
-            // auto distortion is computed later, in stage_transform()
+        // Not crop-local: denoise would change near the edges of the region,
+        // and film negative takes its reference medians over the image (older
+        // profiles). removeSpots() can work on a region, as in the editor, but
+        // that is not tested here yet.
+        if (params.denoise.enabled || params.filmNegative.enabled ||
+            (params.spot.enabled && !params.spot.entries.empty())) {
+            return false;
+        }
+        // transformLuminanceOnly() and transformLCPCAOnly() expect source and
+        // destination to have the same origin; perspective would need the
+        // whole frame anyway (the editor widens by 100%)
+        if (params.vignetting.enabled || params.perspective.enabled ||
+            (params.lensProf.needed() && params.lensProf.useCA)) {
+            return false;
+        }
+        // auto distortion is computed later, in stage_transform()
+        if (params.distortion.enabled && params.distortion.autocompute) {
             return false;
         }
 
