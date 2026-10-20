@@ -638,8 +638,8 @@ private:
         if (!params.crop.enabled || is_fast) {
             return false;
         }
-        if (params.dehaze.enabled || params.drcompression.enabled ||
-            params.denoise.enabled || params.filmNegative.enabled ||
+        if (ipf.needsFullImage() || params.denoise.enabled ||
+            params.filmNegative.enabled ||
             (params.spot.enabled && !params.spot.entries.empty()) ||
             params.vignetting.enabled || params.perspective.enabled ||
             (params.lensProf.needed() && params.lensProf.useCA) ||

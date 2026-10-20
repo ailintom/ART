@@ -632,6 +632,13 @@ Ret ImProcFunctions::apply(const char *name, Method op, Imagefloat *img, bool ca
     return (this->*op)(img);
 }
 
+// STAGE_0 tools work on the whole image, so with one of them enabled a crop
+// must not restrict the input of STAGE_0
+bool ImProcFunctions::needsFullImage()
+{
+    return params->dehaze.enabled || params->drcompression.enabled;
+}
+
 bool ImProcFunctions::process(Stage stage, Imagefloat *img)
 {
     bool stop = false;
@@ -640,7 +647,7 @@ bool ImProcFunctions::process(Stage stage, Imagefloat *img)
 #define STEP_s_(op, s) apply<bool>(#op, &ImProcFunctions::op, img, s)
 
     switch (stage) {
-    case Stage::STAGE_0:
+    case Stage::STAGE_0: // a tool added here must be added to needsFullImage()
         STEP_(dehaze, !params->dehaze.enabled);
         STEP_(dynamicRangeCompression, !params->drcompression.enabled);
         break;
