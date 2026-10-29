@@ -617,6 +617,62 @@ private:
     }
 };
 
+// Sony stores its lens corrections in the raw IFD of the ARW as tags 0x7032
+// (vignetting), 0x7035 (chromatic aberration) and 0x7037 (distortion), each
+// a count followed by the values (twice the count for CA). The IFD that holds
+// them is not the same on every body, so look them up by tag rather than by a
+// fixed key, as for Nikon. Returns false if any of the three is missing, so
+// that the caller can fall back to exiftool.
+bool get_sony_exiv2(Exiv2Metadata &md,
+                    std::unique_ptr<ExifLensCorrection::CorrectionData> &data)
+{
+    std::vector<float> posd, posc, posv;
+    md.load();
+    auto &exif = md.exifData();
+    for (auto it = exif.begin(); it != exif.end(); ++it) {
+        if (it->groupName() != "Image" &&
+            it->groupName().compare(0, 8, "SubImage") != 0) {
+            continue;
+        }
+        std::vector<float> *dst = nullptr;
+        switch (it->tag()) {
+        case 0x7032:
+            dst = &posv;
+            break;
+        case 0x7035:
+            dst = &posc;
+            break;
+        case 0x7037:
+            dst = &posd;
+            break;
+        default:
+            continue;
+        }
+        if (dst->empty()) {
+            for (size_t i = 0, n = it->count(); i < n; ++i) {
+                dst->push_back(it->toFloat(i));
+            }
+        }
+    }
+
+    if (!posd.empty() && !posc.empty() && !posv.empty() && posd[0] <= 16 &&
+        posd.size() > posd[0] && posc.size() > 2 * posd[0] &&
+        posv.size() > posd[0] && posc[0] == 2 * posd[0] &&
+        posv[0] == posd[0]) {
+        SonyCorrectionData *sony = new SonyCorrectionData();
+        data.reset(sony);
+        sony->nc = posd[0];
+        for (int i = 0; i < sony->nc; ++i) {
+            sony->distortion[i] = posd[i + 1];
+            sony->ca_r[i] = posc[i + 1];
+            sony->ca_b[i] = posc[sony->nc + i + 1];
+            sony->vignetting[i] = posv[i + 1];
+        }
+        return true;
+    }
+    return false;
+}
+
 float interpolate(const std::vector<float> &xi, const std::vector<float> &yi,
                   float x)
 {
@@ -727,6 +783,9 @@ ExifLensCorrection::ExifLensCorrection(const FramesMetaData *meta, int width,
                     break;
                 }
             }
+        } else if (make == "SONY" && get_sony_exiv2(md, data_)) {
+            // the tables are plain TIFF tags of the raw: no need to start
+            // exiftool for the maker notes
         } else {
             auto mn = md.getMakernotes();
 
