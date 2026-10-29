@@ -41,6 +41,7 @@
 #include "rtlensfun.h"
 #define BENCHMARK
 #include "StopWatch.h"
+#include "pipelineprofile.h"
 #ifdef _OPENMP
 #include <omp.h>
 #endif
@@ -1890,6 +1891,7 @@ void RawImageSource::preprocess(const RAWParams &raw,
             bitmapBads.reset(new PixelsMap(W, H));
         }
 
+        ART_PROFILE_SCOPE("raw:preprocess:hotdead-find");
         int nFound =
             findHotDeadPixels(*(bitmapBads.get()), raw.hotdeadpix_thresh,
                               raw.hotPixelFilter, raw.deadPixelFilter);
@@ -1942,6 +1944,7 @@ void RawImageSource::preprocess(const RAWParams &raw,
         }
 
         if (pmap) {
+            ART_PROFILE_SCOPE("raw:preprocess:lens-vignette");
             LensCorrection &map = *pmap;
             if (ri->getSensorType() == ST_BAYER ||
                 ri->getSensorType() == ST_FUJI_XTRANS ||
@@ -2055,6 +2058,7 @@ void RawImageSource::preprocess(const RAWParams &raw,
     }
 
     if (totBP) {
+        ART_PROFILE_SCOPE("raw:preprocess:hotdead-fix");
         if (ri->getSensorType() == ST_BAYER) {
             if (numFrames == 4) {
                 for (int i = 0; i < 4; ++i) {
@@ -2100,6 +2104,7 @@ void RawImageSource::preprocess(const RAWParams &raw,
          fabs(raw.cablue) > 0.001) &&
         ri->getSensorType() == ST_BAYER &&
         raw.enable_ca) { // Auto CA correction disabled for X-Trans, for now...
+        ART_PROFILE_SCOPE("raw:preprocess:ca");
         if (plistener) {
             plistener->setProgressStr("CA Auto Correction...");
             plistener->setProgress(0.0);
