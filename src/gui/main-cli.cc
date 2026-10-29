@@ -26,6 +26,7 @@
 
 #include "../engine/clutstore.h"
 #include "../engine/imgiomanager.h"
+#include "../engine/pipelineprofile.h"
 #include "../engine/profilestore.h"
 #include "../engine/settings.h"
 #include "../utils/config.h"
@@ -68,15 +69,12 @@ namespace {
 
 // ART_PROFILE=1: wall-clock time of the phases around processImage() (start
 // is the process's static initialisation, i.e. before main())
-const std::chrono::steady_clock::time_point phase_t0 = std::chrono::steady_clock::now();
+const std::chrono::steady_clock::time_point phase_t0 =
+    std::chrono::steady_clock::now();
 
 void phase(const char *name)
 {
-    static const bool on = [] {
-        const char *e = getenv("ART_PROFILE");
-        return e && *e && *e != '0';
-    }();
-    if (on) {
+    if (art::engine::PipelineProfile::enabled()) {
         std::chrono::duration<double, std::milli> d =
             std::chrono::steady_clock::now() - phase_t0;
         fprintf(stderr, "[phase] %-24s %8.1f ms\n", name, d.count());
