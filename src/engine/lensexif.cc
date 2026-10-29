@@ -100,6 +100,65 @@ public:
     bool has_dist() const override { return true; }
     bool has_vign() const override { return true; }
     bool has_ca() const override { return true; }
+
+    // [n, n values] for distortion and vignetting, [2n, n red, n blue] for CA
+    static SonyCorrectionData *parse(const std::vector<float> &posd,
+                                     const std::vector<float> &posc,
+                                     const std::vector<float> &posv)
+    {
+        if (posd.empty() || posc.empty() || posv.empty()) {
+            return nullptr;
+        }
+        const int n = posd[0];
+        if (n < 2 || n > 16 || posc[0] != 2 * n || posv[0] != n ||
+            posd.size() < size_t(n) + 1 || posc.size() < 2 * size_t(n) + 1 ||
+            posv.size() < size_t(n) + 1) {
+            return nullptr;
+        }
+        SonyCorrectionData *ret = new SonyCorrectionData();
+        ret->nc = n;
+        for (int i = 0; i < n; ++i) {
+            ret->distortion[i] = posd[i + 1];
+            ret->ca_r[i] = posc[i + 1];
+            ret->ca_b[i] = posc[n + i + 1];
+            ret->vignetting[i] = posv[i + 1];
+        }
+        return ret;
+    }
+
+    // tags 0x7037, 0x7035 and 0x7032 of the raw SubIFD, whose index varies
+    // across bodies; older bodies keep them only in the encrypted SR2 block,
+    // which Exiv2 does not read
+    static SonyCorrectionData *parse(const Exiv2::ExifData &exif)
+    {
+        std::vector<float> posd, posc, posv;
+        for (auto it = exif.begin(); it != exif.end(); ++it) {
+            if (it->groupName() != "Image" &&
+                it->groupName().compare(0, 8, "SubImage") != 0) {
+                continue;
+            }
+            std::vector<float> *dst = nullptr;
+            switch (it->tag()) {
+            case 0x7032:
+                dst = &posv;
+                break;
+            case 0x7035:
+                dst = &posc;
+                break;
+            case 0x7037:
+                dst = &posd;
+                break;
+            default:
+                continue;
+            }
+            if (dst->empty()) {
+                for (size_t i = 0, n = it->count(); i < n; ++i) {
+                    dst->push_back(it->toFloat(i));
+                }
+            }
+        }
+        return parse(posd, posc, posv);
+    }
 };
 
 class FujiCorrectionData: public ExifLensCorrection::CorrectionData {
@@ -617,62 +676,6 @@ private:
     }
 };
 
-// Sony stores its lens corrections in the raw IFD of the ARW as tags 0x7032
-// (vignetting), 0x7035 (chromatic aberration) and 0x7037 (distortion), each
-// a count followed by the values (twice the count for CA). The IFD that holds
-// them is not the same on every body, so look them up by tag rather than by a
-// fixed key, as for Nikon. Returns false if any of the three is missing, so
-// that the caller can fall back to exiftool.
-bool get_sony_exiv2(Exiv2Metadata &md,
-                    std::unique_ptr<ExifLensCorrection::CorrectionData> &data)
-{
-    std::vector<float> posd, posc, posv;
-    md.load();
-    auto &exif = md.exifData();
-    for (auto it = exif.begin(); it != exif.end(); ++it) {
-        if (it->groupName() != "Image" &&
-            it->groupName().compare(0, 8, "SubImage") != 0) {
-            continue;
-        }
-        std::vector<float> *dst = nullptr;
-        switch (it->tag()) {
-        case 0x7032:
-            dst = &posv;
-            break;
-        case 0x7035:
-            dst = &posc;
-            break;
-        case 0x7037:
-            dst = &posd;
-            break;
-        default:
-            continue;
-        }
-        if (dst->empty()) {
-            for (size_t i = 0, n = it->count(); i < n; ++i) {
-                dst->push_back(it->toFloat(i));
-            }
-        }
-    }
-
-    if (!posd.empty() && !posc.empty() && !posv.empty() && posd[0] <= 16 &&
-        posd.size() > posd[0] && posc.size() > 2 * posd[0] &&
-        posv.size() > posd[0] && posc[0] == 2 * posd[0] &&
-        posv[0] == posd[0]) {
-        SonyCorrectionData *sony = new SonyCorrectionData();
-        data.reset(sony);
-        sony->nc = posd[0];
-        for (int i = 0; i < sony->nc; ++i) {
-            sony->distortion[i] = posd[i + 1];
-            sony->ca_r[i] = posc[i + 1];
-            sony->ca_b[i] = posc[sony->nc + i + 1];
-            sony->vignetting[i] = posv[i + 1];
-        }
-        return true;
-    }
-    return false;
-}
-
 float interpolate(const std::vector<float> &xi, const std::vector<float> &yi,
                   float x)
 {
@@ -783,11 +786,15 @@ ExifLensCorrection::ExifLensCorrection(const FramesMetaData *meta, int width,
                     break;
                 }
             }
-        } else if (make == "SONY" && get_sony_exiv2(md, data_)) {
-            // the tables are plain TIFF tags of the raw: no need to start
-            // exiftool for the maker notes
         } else {
-            auto mn = md.getMakernotes();
+            if (make == "SONY") {
+                md.load();
+                data_.reset(SonyCorrectionData::parse(md.exifData()));
+            }
+            std::unordered_map<std::string, std::string> mn;
+            if (!data_) {
+                mn = md.getMakernotes();
+            }
 
             const auto gettag = [&](const char *name) -> std::string {
                 auto it = mn.find(name);
@@ -808,22 +815,11 @@ ExifLensCorrection::ExifLensCorrection(const FramesMetaData *meta, int width,
             };
 
             if (make == "SONY") {
-                auto posd = getvec("DistortionCorrParams");
-                auto posc = getvec("ChromaticAberrationCorrParams");
-                auto posv = getvec("VignettingCorrParams");
-
-                if (!posd.empty() && !posc.empty() && !posv.empty() &&
-                    posd[0] <= 16 && posc[0] == 2 * posd[0] &&
-                    posv[0] == posd[0]) {
-                    SonyCorrectionData *sony = new SonyCorrectionData();
-                    data_.reset(sony);
-                    sony->nc = posd[0];
-                    for (int i = 0; i < sony->nc; ++i) {
-                        sony->distortion[i] = posd[i + 1];
-                        sony->ca_r[i] = posc[i + 1];
-                        sony->ca_b[i] = posc[sony->nc + i + 1];
-                        sony->vignetting[i] = posv[i + 1];
-                    }
+                if (!data_) {
+                    data_.reset(SonyCorrectionData::parse(
+                        getvec("DistortionCorrParams"),
+                        getvec("ChromaticAberrationCorrParams"),
+                        getvec("VignettingCorrParams")));
                 }
             } else if (make == "FUJIFILM") {
                 auto posd = getvec("GeometricDistortionParams");
